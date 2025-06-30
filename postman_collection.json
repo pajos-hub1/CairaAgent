@@ -1,0 +1,103 @@
+{
+  "info": {
+    "name": "Caira AI Engine API",
+    "description": "API collection for testing the Caira AI Engine service",
+    "version": "1.0.0"
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Process Command - Sort Emails",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"command_text\": \"Sort emails from notifications@shopmaster.com into 'Shopping Updates'\",\n  \"user_profile\": {\n    \"user_id\": \"user123\",\n    \"preferences\": {\n      \"default_folders\": [\"Shopping\", \"Work\", \"Personal\"],\n      \"auto_sort\": true\n    },\n    \"email_patterns\": [\"@company.com\", \"@notifications.\"],\n    \"folder_structure\": [\"Inbox\", \"Shopping\", \"Work\", \"Personal\", \"Archive\"],\n    \"common_contacts\": [\"boss@company.com\", \"team@company.com\"]\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ai-engine/process",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ai-engine", "process"]
+        }
+      }
+    },
+    {
+      "name": "Process Command - Search Emails",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"command_text\": \"Find all emails from john@company.com from last week\",\n  \"user_profile\": {\n    \"user_id\": \"user123\",\n    \"preferences\": {},\n    \"email_patterns\": [],\n    \"folder_structure\": [],\n    \"common_contacts\": []\n  }\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ai-engine/process",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ai-engine", "process"]
+        }
+      }
+    },
+    {
+      "name": "Get Capabilities",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/ai-engine/capabilities",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ai-engine", "capabilities"]
+        }
+      }
+    },
+    {
+      "name": "Validate Command",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"command_text\": \"Block sender spam@badsite.com\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/ai-engine/validate",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "ai-engine", "validate"]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000",
+      "type": "string"
+    }
+  ]
+}
