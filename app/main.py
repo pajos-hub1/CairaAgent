@@ -1,128 +1,165 @@
-"""
-Caira AI Engine: FastAPI Server
-Main entry point for the AI Engine service
-"""
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import logging
-from typing import Dict, Any
-import os
-from dotenv import load_dotenv
-
+from .schemas import AIRequest, FollowUpRequest, AIResponse, ConversationHistory, HealthStatus
 from .engine import CairaAI_Engine
-from .schemas import InitialRequest, FollowUpRequest, AIResponse
+from dotenv import load_dotenv
+import os
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Initialize FastAPI app
 app = FastAPI(
-    title="Caira AI Engine",
-    description="Intelligent email assistant AI engine with hybrid workflow",
+    title="Caira Unified AI Engine",
+    description="A unified conversational AI assistant for Gmail operations with hybrid workflow support",
     version="2.0.0"
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],  # Configure this properly for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize AI Engine
-ai_engine = CairaAI_Engine()
+# Initialize the AI engine
+try:
+    ai_engine = CairaAI_Engine()
+except ValueError as e:
+    print(f"Failed to initialize AI engine: {e}")
+    ai_engine = None
 
 
 @app.get("/")
-async def root():
-    """Health check endpoint"""
+def read_root():
+    """Root endpoint with API information."""
     return {
-        "service": "Caira AI Engine",
+        "message": "Caira Unified AI Engine with Hybrid Workflow",
         "version": "2.0.0",
-        "status": "operational",
-        "workflow_model": "hybrid"
+        "workflows": {
+            "single_call": "Direct actions like drafting emails, blocking senders",
+            "two_call": "Data fetching actions like summarizing emails, answering questions"
+        },
+        "endpoints": {
+            "command": "POST /command - Process initial user command",
+            "follow-up": "POST /follow-up - Process follow-up with email data",
+            "history": "GET /history/{session_id} - Get conversation history",
+            "clear": "DELETE /history/{session_id} - Clear conversation history",
+            "health": "GET /health - System health check",
+            "sessions": "GET /sessions - List all active conversation sessions"
+        }
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Detailed health check"""
-    try:
-        # Test AI engine initialization
-        test_response = ai_engine._test_connection()
-        return {
-            "status": "healthy",
-            "ai_engine": "connected" if test_response else "disconnected",
-            "model": "Together AI + Llama",
-            "timestamp": "2025-06-30T14:21:47Z"
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        raise HTTPException(status_code=503, detail="Service unhealthy")
-
-
-@app.post("/api/v1/ai-engine/process", response_model=AIResponse)
-async def process_request(request: InitialRequest | FollowUpRequest):
+@app.post("/command", response_model=AIResponse)
+def process_initial_command_endpoint(request: AIRequest):
     """
-    Main processing endpoint for both initial and follow-up requests
-    Handles the hybrid workflow model
+    Endpoint for the user's initial command. This is the first call.
+    Determines whether to use single-call or two-call workflow.
     """
-    try:
-        logger.info(f"Processing request type: {type(request).__name__}")
-
-        # Convert request to dict for processing
-        request_data = request.model_dump()
-
-        # Process through AI engine
-        response = ai_engine.process_request(request_data)
-
-        logger.info(f"Generated response with action_type: {response.get('action_type')}")
-        return response
-
-    except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+    if ai_engine is None:
         raise HTTPException(
             status_code=500,
-            detail=f"AI Engine processing error: {str(e)}"
+            detail="AI engine not initialized. Please check your TOGETHER_API_KEY environment variable."
         )
 
-
-@app.post("/api/v1/ai-engine/follow-up", response_model=AIResponse)
-async def process_follow_up(request: FollowUpRequest):
-    """
-    Dedicated endpoint for follow-up requests (optional alternative)
-    """
     try:
-        logger.info("Processing follow-up request")
+        response_data = ai_engine.process_initial_command(
+            session_id=request.session_id,
+            command_text=request.command_text,
+            email_context=request.email_context
+        )
 
-        request_data = request.model_dump()
-        response = ai_engine._handle_follow_up_request(request_data)
+        if "error" in response_data:
+            raise HTTPException(status_code=500, detail=response_data["error"])
 
-        logger.info("Follow-up request processed successfully")
-        return response
+        return AIResponse(**response_data)
 
     except Exception as e:
-        logger.error(f"Error processing follow-up request: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Follow-up processing error: {str(e)}"
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@app.post("/follow-up", response_model=AIResponse)
+def process_follow_up_endpoint(request: FollowUpRequest):
+    """
+    Endpoint for the second call in a two-call workflow.
+    Processes email data and provides final response.
+    """
+    if ai_engine is None:
+        raise HTTPException(status_code=500, detail="AI engine not initialized")
+
+    try:
+        response_data = ai_engine.process_follow_up(
+            session_id=request.session_id,
+            follow_up_action=request.follow_up_action,
+            email_data=request.email_data,
+            original_command=request.original_command
         )
 
+        if "error" in response_data:
+            raise HTTPException(status_code=500, detail=response_data["error"])
 
-if __name__ == "__main__":
-    import uvicorn
+        return AIResponse(**response_data)
 
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@app.get("/history/{session_id}", response_model=ConversationHistory)
+def get_conversation_history(session_id: str):
+    """
+    Get the conversation history for a specific session.
+    """
+    if ai_engine is None:
+        raise HTTPException(status_code=500, detail="AI engine not initialized")
+
+    history = ai_engine.get_conversation_history(session_id)
+    return ConversationHistory(
+        session_id=session_id,
+        history=history,
+        total_turns=len(history)
     )
+
+
+@app.delete("/history/{session_id}")
+def clear_conversation_history(session_id: str):
+    """
+    Clear the conversation history for a specific session.
+    """
+    if ai_engine is None:
+        raise HTTPException(status_code=500, detail="AI engine not initialized")
+
+    cleared = ai_engine.clear_conversation(session_id)
+    return {
+        "session_id": session_id,
+        "cleared": cleared,
+        "message": "Conversation history cleared" if cleared else "No history found for this session"
+    }
+
+
+@app.get("/health", response_model=HealthStatus)
+def health_check():
+    """Health check endpoint with detailed system information."""
+    model_info = {}
+    if ai_engine:
+        model_info = ai_engine.get_model_info()
+
+    return HealthStatus(
+        status="healthy" if ai_engine is not None else "unhealthy",
+        ai_engine_initialized=ai_engine is not None,
+        model_info=model_info
+    )
+
+
+@app.get("/sessions")
+def list_active_sessions():
+    """List all active conversation sessions."""
+    if ai_engine is None:
+        raise HTTPException(status_code=500, detail="AI engine not initialized")
+
+    sessions = list(ai_engine.conversations.keys())
+    return {
+        "active_sessions": sessions,
+        "total_sessions": len(sessions)
+    }

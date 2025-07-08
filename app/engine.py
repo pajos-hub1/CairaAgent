@@ -1,68 +1,53 @@
-"""
-Caira AI Engine: Core AI Logic (Together AI)
-The intelligent brain of the email assistant
-"""
-
 import together
-import json
-import logging
 import os
-from typing import Dict, List, Any, Optional
-from datetime import datetime
+import json
+from .prompts import COMMAND_CLASSIFIER_PROMPT, MASTER_ROUTER_PROMPT, SUMMARIZER_PROMPT, QUESTION_ANSWERER_PROMPT
 
-from .prompts import PromptTemplates
-from .schemas import ActionType
-
-logger = logging.getLogger(__name__)
 
 class CairaAI_Engine:
-    """
-    Core AI Engine implementing hybrid workflow model
-    Handles both one-call and two-call processing patterns
-    Uses Together AI with Llama Guard 4 12B
-    """
-
     def __init__(self):
-        """Initialize the AI Engine with Together AI"""
-        self.api_key = os.getenv("TOGETHER_API_KEY")
-        if not self.api_key:
+        # Configure Together AI
+        api_key = os.environ.get("TOGETHER_API_KEY")
+        if not api_key:
             raise ValueError("TOGETHER_API_KEY environment variable is required")
 
-        # Configure Together AI
-        together.api_key = self.api_key
-        self.client = together.Together(api_key=self.api_key)
+        self.client = together.Together(api_key=api_key)
+        self.model = os.environ.get("TOGETHER_MODEL", "mistralai/Mistral-7B-Instruct-v0.1")
+        self.conversations = {}  # In-memory history storage
+        print(f"Unified CairaAI Engine Initialized with {self.model}")
 
-        # Model configuration
-        self.model_name = os.getenv("TOGETHER_MODEL", "mistralai/Mistral-7B-Instruct-v0.1")
+    def _update_history(self, session_id: str, user_text: str, ai_response: dict):
+        """Appends the latest turn to the conversation history."""
+        if session_id not in self.conversations:
+            self.conversations[session_id] = []
 
-        # Initialize prompt templates
-        self.prompts = PromptTemplates()
+        self.conversations[session_id].append({"user": user_text})
+        self.conversations[session_id].append({"ai": ai_response})
 
-        logger.info(f"Caira AI Engine initialized with Together AI model: {self.model_name}")
+        # Limit history size to prevent it from growing too large
+        if len(self.conversations[session_id]) > 12:
+            self.conversations[session_id] = self.conversations[session_id][-12:]
 
-    def _test_connection(self) -> bool:
-        """Test connection to Together AI API"""
+    def get_conversation_history(self, session_id: str) -> list:
+        """Returns the conversation history for a given session."""
+        return self.conversations.get(session_id, [])
+
+    def clear_conversation(self, session_id: str) -> bool:
+        """Clears the conversation history for a given session."""
+        if session_id in self.conversations:
+            del self.conversations[session_id]
+            return True
+        return False
+
+    def _call_together_ai(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.1) -> str:
+        """Helper method to call Together AI with consistent parameters."""
         try:
             response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[{"role": "user", "content": "Test connection - respond with 'OK'"}],
-                max_tokens=10,
-                temperature=0.1
-            )
-            return bool(response.choices[0].message.content)
-        except Exception as e:
-            logger.error(f"Connection test failed: {str(e)}")
-            return False
-
-    def _generate_completion(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.3) -> str:
-        """Generate completion using Together AI with Mistral 7B"""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=self.model,
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are Caira, an intelligent email assistant AI. You are precise, helpful, and always follow instructions exactly."
+                        "content": "You are a helpful AI assistant that responds with valid JSON objects for Gmail operations."
                     },
                     {
                         "role": "user",
@@ -72,238 +57,132 @@ class CairaAI_Engine:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=0.9,
-                repetition_penalty=1.0,  # Mistral works better with lower repetition penalty
-                stop=["</s>"]  # Mistral's stop token
+                stop=None
             )
 
             return response.choices[0].message.content.strip()
 
         except Exception as e:
-            logger.error(f"Error generating completion: {str(e)}")
-            raise
+            raise Exception(f"Together AI API call failed: {str(e)}")
 
-    def process_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Main entry point for processing requests
-        Determines if request is initial or follow-up
-        """
+    def process_initial_command(self, session_id: str, command_text: str, email_context: dict | None) -> dict:
+        """Handles the FIRST call. It reads history and decides on a workflow."""
+        print(f"Processing initial command for session: {session_id}")
+
+        # Retrieve history for the current session
+        history = self.conversations.get(session_id, [])
+
+        # Format the history for the prompt
+        if history:
+            history_text = "\n".join([json.dumps(turn, indent=2) for turn in history])
+        else:
+            history_text = "No previous conversation history."
+
+        # Add email context to the prompt if it exists
+        context_info = ""
+        if email_context:
+            context_info = f"\n\n**Additional Context:**\n{json.dumps(email_context, indent=2)}"
+
+        prompt = MASTER_ROUTER_PROMPT.format(
+            conversation_history=history_text,
+            user_command=command_text
+        ) + context_info
+
         try:
-            if "follow_up_action" in request_data:
-                logger.info("Processing follow-up request")
-                return self._handle_follow_up_request(request_data)
-            else:
-                logger.info("Processing initial command")
-                return self._handle_initial_command(request_data)
-        except Exception as e:
-            logger.error(f"Error in process_request: {str(e)}")
+            # Call Together AI to get the initial action_type
+            response_text = self._call_together_ai(prompt)
+
+            # Clean up the response (remove markdown code blocks if present)
+            cleaned_text = response_text.replace("\`\`\`json", "").replace("\`\`\`", "").strip()
+
+            # Parse the JSON response
+            ai_payload = json.loads(cleaned_text)
+
+            # Validate required fields
+            if "action_type" not in ai_payload:
+                raise ValueError("AI response missing 'action_type' field")
+
+            if "payload" not in ai_payload:
+                ai_payload["payload"] = {}
+
+            # Update history with this turn
+            self._update_history(session_id, command_text, ai_payload)
+
+            return ai_payload
+
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            print(f"Raw response: {response_text if 'response_text' in locals() else 'No response'}")
             return {
-                "status": "error",
-                "action_type": "ERROR",
-                "payload": {"error": str(e)}
+                "error": "Failed to parse AI response as JSON",
+                "raw_response": response_text if 'response_text' in locals() else None
             }
-
-    def _handle_initial_command(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle initial user command using Master Router
-        This is the core intelligence that determines workflow
-        """
-        try:
-            command_text = request_data.get("command_text", "")
-            user_profile = request_data.get("user_profile", {})
-            email_context = request_data.get("email_context")
-
-            # Generate master router prompt
-            prompt = self.prompts.get_master_router_prompt(
-                command_text, user_profile, email_context
-            )
-
-            # Get AI response with lower temperature for more consistent JSON
-            response_text = self._generate_completion(prompt, max_tokens=500, temperature=0.1)
-
-            logger.info(f"Master Router raw response: {response_text}")
-
-            # Parse JSON response
-            try:
-                # Clean up response text - remove any markdown formatting
-                clean_response = response_text.strip()
-                if clean_response.startswith("\`\`\`json"):
-                    clean_response = clean_response.replace("\`\`\`json", "").replace("\`\`\`", "").strip()
-                elif clean_response.startswith("\`\`\`"):
-                    clean_response = clean_response.replace("\`\`\`", "").strip()
-
-                ai_decision = json.loads(clean_response)
-
-                # Validate response structure
-                if "action_type" not in ai_decision or "payload" not in ai_decision:
-                    raise ValueError("Invalid AI response structure")
-
-                # Add metadata
-                ai_decision["status"] = "success"
-                ai_decision["metadata"] = {
-                    "timestamp": datetime.now().isoformat(),
-                    "model": self.model_name,
-                    "workflow_type": self._get_workflow_type(ai_decision["action_type"])
-                }
-
-                return ai_decision
-
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse AI response as JSON: {response_text}")
-                # Fallback: try to extract action from text
-                return self._fallback_command_processing(command_text, user_profile)
-
         except Exception as e:
-            logger.error(f"Error in _handle_initial_command: {str(e)}")
-            return {
-                "status": "error",
-                "action_type": "ERROR",
-                "payload": {"error": f"Initial command processing failed: {str(e)}"}
-            }
+            print(f"Error processing initial command: {e}")
+            return {"error": f"Failed to process command: {str(e)}"}
 
-    def _handle_follow_up_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle follow-up requests (second call in two-call workflow)
-        """
+    def process_follow_up(self, session_id: str, follow_up_action: str, email_data: list,
+                          original_command: str) -> dict:
+        """Handles the SECOND call in a two-call workflow."""
+        print(f"Processing follow-up action: {follow_up_action} for session: {session_id}")
+
         try:
-            follow_up_action = request_data.get("follow_up_action", "")
-            email_data = request_data.get("email_data", [])
-            original_command = request_data.get("original_command", "")
+            # Convert email data to string format
+            email_content_str = json.dumps(email_data, indent=2)
 
             if follow_up_action == "SUMMARIZE_CONTENT":
-                return self._summarize_email_content(email_data, original_command)
+                prompt = SUMMARIZER_PROMPT.format(
+                    original_command=original_command,
+                    email_content=email_content_str
+                )
+
+                response_text = self._call_together_ai(prompt, max_tokens=1500, temperature=0.3)
+
+                final_response = {
+                    "status": "success",
+                    "action_type": "FINAL_RESPONSE",
+                    "payload": {
+                        "text_response": response_text,
+                        "response_type": "summary",
+                        "processed_emails": len(email_data)
+                    }
+                }
+
             elif follow_up_action == "ANSWER_QUESTION":
-                return self._answer_email_question(email_data, original_command)
+                prompt = QUESTION_ANSWERER_PROMPT.format(
+                    original_command=original_command,
+                    email_content=email_content_str
+                )
+
+                response_text = self._call_together_ai(prompt, max_tokens=1000, temperature=0.2)
+
+                final_response = {
+                    "status": "success",
+                    "action_type": "FINAL_RESPONSE",
+                    "payload": {
+                        "text_response": response_text,
+                        "response_type": "answer",
+                        "processed_emails": len(email_data)
+                    }
+                }
+
             else:
-                raise ValueError(f"Unknown follow-up action: {follow_up_action}")
+                return {"error": f"Unknown follow-up action: {follow_up_action}"}
+
+            # Update history with the final outcome
+            self._update_history(session_id, f"System: Processed {follow_up_action} for {len(email_data)} emails",
+                                 final_response)
+
+            return final_response
 
         except Exception as e:
-            logger.error(f"Error in _handle_follow_up_request: {str(e)}")
-            return {
-                "status": "error",
-                "action_type": "ERROR",
-                "payload": {"error": f"Follow-up processing failed: {str(e)}"}
-            }
+            print(f"Error processing follow-up: {e}")
+            return {"error": f"Failed to process follow-up: {str(e)}"}
 
-    def _summarize_email_content(self, email_data: List[Dict], original_command: str) -> Dict[str, Any]:
-        """Summarize email content using specialized prompt"""
-        try:
-            prompt = self.prompts.get_summarization_prompt(email_data, original_command)
-
-            # Use higher max_tokens for summaries and slightly higher temperature for more natural language
-            summary_text = self._generate_completion(prompt, max_tokens=1500, temperature=0.5)
-
-            return {
-                "status": "success",
-                "action_type": ActionType.FINAL_RESPONSE,
-                "payload": {
-                    "text_response": summary_text
-                },
-                "metadata": {
-                    "timestamp": datetime.now().isoformat(),
-                    "emails_processed": len(email_data),
-                    "model": self.model_name
-                }
-            }
-
-        except Exception as e:
-            logger.error(f"Error in _summarize_email_content: {str(e)}")
-            raise
-
-    def _answer_email_question(self, email_data: List[Dict], original_command: str) -> Dict[str, Any]:
-        """Answer specific questions about email content"""
-        try:
-            prompt = self.prompts.get_question_answering_prompt(email_data, original_command)
-
-            # Use moderate settings for Q&A
-            answer_text = self._generate_completion(prompt, max_tokens=1000, temperature=0.4)
-
-            return {
-                "status": "success",
-                "action_type": ActionType.FINAL_RESPONSE,
-                "payload": {
-                    "text_response": answer_text
-                },
-                "metadata": {
-                    "timestamp": datetime.now().isoformat(),
-                    "emails_analyzed": len(email_data),
-                    "model": self.model_name
-                }
-            }
-
-        except Exception as e:
-            logger.error(f"Error in _answer_email_question: {str(e)}")
-            raise
-
-    def _fallback_command_processing(self, command_text: str, user_profile: Dict) -> Dict[str, Any]:
-        """
-        Fallback processing when JSON parsing fails
-        Uses simpler heuristics to determine action
-        """
-        logger.info("Using fallback command processing")
-
-        command_lower = command_text.lower()
-
-        # Simple keyword-based classification
-        if any(word in command_lower for word in ["show", "find", "search", "list", "get"]):
-            # Likely a search query
-            query_prompt = self.prompts.get_gmail_query_builder_prompt(command_text)
-            try:
-                search_string = self._generate_completion(query_prompt, max_tokens=200, temperature=0.1)
-
-                return {
-                    "status": "success",
-                    "action_type": ActionType.GMAIL_QUERY_GENERATED,
-                    "payload": {
-                        "gmail_search_string": search_string,
-                        "explanation": "Generated via fallback processing"
-                    }
-                }
-            except:
-                # Ultimate fallback
-                return {
-                    "status": "success",
-                    "action_type": ActionType.GMAIL_QUERY_GENERATED,
-                    "payload": {
-                        "gmail_search_string": command_text,
-                        "explanation": "Direct command passthrough"
-                    }
-                }
-
-        elif any(word in command_lower for word in ["summarize", "summary", "overview"]):
-            # Likely needs summarization
-            return {
-                "status": "success",
-                "action_type": ActionType.FETCH_AND_SUMMARIZE,
-                "payload": {
-                    "gmail_search_string": command_text
-                }
-            }
-
-        else:
-            # Default to search
-            return {
-                "status": "success",
-                "action_type": ActionType.GMAIL_QUERY_GENERATED,
-                "payload": {
-                    "gmail_search_string": command_text
-                }
-            }
-
-    def _get_workflow_type(self, action_type: str) -> str:
-        """Determine workflow type based on action_type"""
-        one_call_actions = [
-            ActionType.GMAIL_QUERY_GENERATED,
-            ActionType.ACTION_REQUIRED
-        ]
-
-        two_call_actions = [
-            ActionType.FETCH_AND_SUMMARIZE,
-            ActionType.FETCH_AND_ANSWER
-        ]
-
-        if action_type in one_call_actions:
-            return "one-call"
-        elif action_type in two_call_actions:
-            return "two-call"
-        else:
-            return "unknown"
+    def get_model_info(self) -> dict:
+        """Returns information about the current model configuration."""
+        return {
+            "model": self.model,
+            "provider": "Together AI",
+            "capabilities": ["text_generation", "json_output", "conversation_history"]
+        }

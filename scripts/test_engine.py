@@ -1,123 +1,90 @@
 #!/usr/bin/env python3
 """
-Test script for the Caira AI Engine
-Run this to verify the engine is working correctly
+Test script for the Caira AI Engine API using Together AI's Mistral model
+Run this script to test the conversational flow
 """
 
-import sys
-import os
-import asyncio
+import requests
 import json
+import time
 
-# Add the app directory to the Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from app.engine import CairaAI_Engine
-from app.schemas import UserProfile, EmailData
+BASE_URL = "http://127.0.0.1:8000"
+SESSION_ID = "test-conversation-123"
 
 
-async def test_ai_engine():
-    """Test the AI Engine with sample requests"""
+def test_api():
+    print("🚀 Testing Caira AI Engine API with Together AI Mistral")
+    print("=" * 60)
 
-    print("🚀 Testing Caira AI Engine...")
+    # Test health check first
+    print("\n🏥 Health Check")
+    health_response = requests.get(f"{BASE_URL}/health")
+    if health_response.status_code == 200:
+        health_data = health_response.json()
+        print(f"✅ Status: {health_data['status']}")
+        print(f"🤖 AI Engine: {'Initialized' if health_data['ai_engine_initialized'] else 'Not Initialized'}")
+    else:
+        print(f"❌ Health check failed: {health_response.status_code}")
+        return
 
-    try:
-        # Initialize engine
-        engine = CairaAI_Engine()
-        print("✅ AI Engine initialized successfully")
+    # Test 1: Initial draft request
+    print("\n📝 Test 1: Initial Email Draft")
+    response1 = requests.post(f"{BASE_URL}/process", json={
+        "session_id": SESSION_ID,
+        "command_text": "Write an email to Sarah about the project delay."
+    })
 
-        # Test connection
-        if engine._test_connection():
-            print("✅ Together AI connection successful")
-        else:
-            print("❌ Together AI connection failed")
-            return
+    if response1.status_code == 200:
+        result1 = response1.json()
+        print(f"✅ Status: {result1['status']}")
+        print(f"📧 Action: {result1['action_type']}")
+        print(f"📄 Payload: {json.dumps(result1['payload'], indent=2)}")
+    else:
+        print(f"❌ Error: {response1.status_code} - {response1.text}")
+        return
 
-        # Sample user profile
-        user_profile = {
-            "user_id": "test_user_123",
-            "email": "test@example.com",
-            "timezone": "UTC",
-            "language": "en"
-        }
+    time.sleep(1)
 
-        # Test 1: One-Call Workflow (Gmail Query)
-        print("\n📧 Test 1: Gmail Query Generation")
-        request1 = {
-            "command_text": "Show me emails from notifications@shopmaster.com",
-            "user_profile": user_profile
-        }
+    # Test 2: Follow-up modification
+    print("\n🔄 Test 2: Update the Draft")
+    response2 = requests.post(f"{BASE_URL}/process", json={
+        "session_id": SESSION_ID,
+        "command_text": "Set the new timeline to March 6th."
+    })
 
-        response1 = engine.process_request(request1)
-        print(f"Response: {json.dumps(response1, indent=2)}")
+    if response2.status_code == 200:
+        result2 = response2.json()
+        print(f"✅ Status: {result2['status']}")
+        print(f"📧 Action: {result2['action_type']}")
+        print(f"📄 Payload: {json.dumps(result2['payload'], indent=2)}")
+    else:
+        print(f"❌ Error: {response2.status_code} - {response2.text}")
+        return
 
-        # Test 2: Two-Call Workflow (Summarization)
-        print("\n📝 Test 2: Email Summarization Workflow")
+    time.sleep(1)
 
-        # Initial request
-        request2_initial = {
-            "command_text": "Summarize my emails from HR this week",
-            "user_profile": user_profile
-        }
+    # Test 3: Get conversation history
+    print("\n📚 Test 3: Conversation History")
+    response3 = requests.get(f"{BASE_URL}/history/{SESSION_ID}")
 
-        response2_initial = engine.process_request(request2_initial)
-        print(f"Initial Response: {json.dumps(response2_initial, indent=2)}")
+    if response3.status_code == 200:
+        history = response3.json()
+        print(f"✅ Session: {history['session_id']}")
+        print(f"📊 Total turns: {history['total_turns']}")
+        print("📜 History:")
+        for i, turn in enumerate(history['history']):
+            print(f"  {i + 1}. {json.dumps(turn, indent=4)}")
+    else:
+        print(f"❌ Error: {response3.status_code} - {response3.text}")
 
-        # Follow-up request (simulating backend fetching emails)
-        if response2_initial.get("action_type") == "FETCH_AND_SUMMARIZE":
-            sample_emails = [
-                {
-                    "subject": "New Work Policy Update",
-                    "sender": "hr@company.com",
-                    "body": "Dear team, we're implementing a new flexible work policy starting next month. Key changes include: 1) Remote work up to 3 days per week, 2) Flexible hours between 7 AM - 7 PM, 3) New collaboration tools will be provided. Please review the attached document and confirm your preferred schedule by Friday.",
-                    "timestamp": "2025-06-28T10:00:00Z"
-                },
-                {
-                    "subject": "Q&A Session - Friday 2 PM",
-                    "sender": "hr@company.com",
-                    "body": "Hi everyone, we're hosting a Q&A session this Friday at 2 PM in the main conference room to discuss the new work policy. Come with your questions! Light refreshments will be provided. RSVP by Thursday.",
-                    "timestamp": "2025-06-29T14:30:00Z"
-                }
-            ]
-
-            request2_followup = {
-                "follow_up_action": "SUMMARIZE_CONTENT",
-                "email_data": sample_emails,
-                "original_command": "Summarize my emails from HR this week",
-                "user_profile": user_profile
-            }
-
-            response2_final = engine.process_request(request2_followup)
-            print(f"Final Response: {json.dumps(response2_final, indent=2)}")
-
-        # Test 3: Question Answering
-        print("\n❓ Test 3: Question Answering")
-        request3_initial = {
-            "command_text": "What time is the HR Q&A session?",
-            "user_profile": user_profile
-        }
-
-        response3_initial = engine.process_request(request3_initial)
-        print(f"Initial Response: {json.dumps(response3_initial, indent=2)}")
-
-        if response3_initial.get("action_type") == "FETCH_AND_ANSWER":
-            request3_followup = {
-                "follow_up_action": "ANSWER_QUESTION",
-                "email_data": sample_emails,
-                "original_command": "What time is the HR Q&A session?",
-                "user_profile": user_profile
-            }
-
-            response3_final = engine.process_request(request3_followup)
-            print(f"Final Response: {json.dumps(response3_final, indent=2)}")
-
-        print("\n🎉 All tests completed successfully!")
-
-    except Exception as e:
-        print(f"❌ Test failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    print("\n🎉 Testing completed!")
 
 
 if __name__ == "__main__":
-    asyncio.run(test_ai_engine())
+    try:
+        test_api()
+    except requests.exceptions.ConnectionError:
+        print("❌ Connection Error: Make sure the server is running on http://127.0.0.1:8000")
+        print("   Run: uvicorn app.main:app --reload")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
